@@ -88,6 +88,14 @@ export interface PrologueState {
   // 例如: { 'found_crowbar': true, 'checked_tv': true }
   flags: Record<string, boolean>;
 
+  // 当前楼层 (1-8)
+  currentFloor: number;
+  // 已探索的房间集合 (e.g. ["5-1", "5-2", "1-1"])
+  exploredRooms: string[];
+
+  // 当前激活的序章事件ID (用于触发 EventModal)
+  activeEventId?: string;
+
   // 节点探索深度 (用于计算探索率)
   // key 是 actionId 或 nodeId, value 是当前探索层数 (0, 1, 2...)
   nodeProgress: Record<string, number>;

@@ -105,7 +105,9 @@ export const INITIAL_GAME_STATE: any = {
     isActive: true,
     location: 'HOME',
     flags: {},         // 使用新的 flag 系统
-    nodeProgress: {}   // 使用新的节点探索系统
+    nodeProgress: {},   // 使用新的节点探索系统
+    currentFloor: 5,    // 默认从5楼开始
+    exploredRooms: []   // 已探索的房间 ID
   },
   activeEvent: null,
   logs: ['你从昏迷中醒来...', '头痛欲裂，门外似乎有什么东西在疯狂撞击。'],

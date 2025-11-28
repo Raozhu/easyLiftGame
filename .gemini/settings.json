@@ -1,0 +1,8 @@
+{
+  "general": {
+    "enablePromptCompletion": true
+  },
+  "ui": {
+    "hideWindowTitle": true
+  }
+}

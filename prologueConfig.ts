@@ -1,75 +1,63 @@
-
 import { GameState, PrologueLocationId, PrologueState, StatType } from './types';
 
-// ==========================================
+// ========================================== 
 // 1. 地点与环境描述 (Location Flavors)
-// ==========================================
+// ========================================== 
 
 export interface LocationFlavor {
   id: PrologueLocationId;
   name: string;
-  baseDesc: string;      // 基础环境描写
+  baseDesc: string | ((state: GameState) => string);      // 基础环境描写，支持动态生成
   functionDesc: string;  // 功能性/目标性描写
 }
 
 export const PROLOGUE_LOCATIONS: Record<PrologueLocationId, LocationFlavor> = {
   HOME: {
     id: 'HOME',
-    name: '自己的房间',
+    name: '自己的房间 (502)',
     baseDesc:
-      '这是你在末日前最后的据点：一室一厅的老小区住宅。旧沙发上还残留着昨晚的折叠痕迹，茶几上摊着几本来不及收拾的杂志。窗帘紧闭，透出一种压抑的昏黄。',
+      '这是你在末日前最后的据点：5楼的一室一厅。旧沙发上还残留着昨晚的折叠痕迹，茶几上摊着几本来不及收拾的杂志。窗帘紧闭，透出一种压抑的昏黄。',
     functionDesc:
       '这里暂时是安全的，但你很清楚这种安全正在倒计时。你可以整理物资，或者鼓起勇气看向门外。'
   },
   CORRIDOR: {
     id: 'CORRIDOR',
-    name: '五楼楼道',
-    baseDesc:
-      '推开门，一股腐烂与铁锈混合的腥味扑面而来。感应灯接触不良，滋滋作响。你刚刚解决掉的那具尸体倒在门口，暗红色的血迹顺着地砖缝隙，像树根一样缓慢蔓延。',
+    name: '楼道',
+    baseDesc: (state: GameState) => {
+        const floor = state.prologue.currentFloor;
+        const rooms = [`${floor}-1`, `${floor}-2`];
+        const explored = rooms.filter(r => state.prologue.exploredRooms.includes(r)).length;
+        
+        let desc = `你现在位于 ${floor} 楼的楼道。`;
+        if (floor === 1) desc += ' 一楼大厅的大门被密密麻麻的电线缠绕死锁，那是你通往外界的唯一出口，但似乎需要某种特定的工具或权限才能打开。';
+        if (floor === 8) desc += ' 这里是顶楼，天花板上有严重的渗水痕迹。';
+        
+        desc += `\n空气中弥漫着腐败的气息。这一层的两个住户 (${floor}01, ${floor}02) 探索进度: ${explored}/2。`;
+        return desc;
+    },
     functionDesc:
-      '这里是你与外界的第一道缓冲区。中间是死寂的电梯，两边通向未知的邻居家。想要活下去，你必须把这层楼变成绝对安全的“据点”。'
+      '你可以上下楼层移动，或者破门探索这一层的住户。你的目标是彻底搜索整栋楼 (8层 x 2户)，找到逃离的方法。'
   }
 };
 
-// ==========================================
-// 2. 探索节点权重 (Exploration Weights)
-// ==========================================
-
-// 定义哪些 actionId 会贡献探索进度，以及它们的权重（总进度 = sum(currentLevel * weight) / sum(maxLevel * weight)）
-export interface ExplorationNode {
-  maxLevel: number; // 这个节点最多能探索几次
-  weight: number;   // 这个节点对总进度的贡献权重
-}
-
-export const EXPLORATION_NODES: Record<string, ExplorationNode> = {
-  // 楼道阶段的探索节点
-  'COR_NEIGHBOR': { maxLevel: 2, weight: 2 }, // 邻居家：进门1次，搜刮1次
-  'COR_END': { maxLevel: 1, weight: 1 },      // 走廊尽头：1次
-  'COR_STAIRS': { maxLevel: 1, weight: 1 },   // 楼梯间：1次
-  // 电梯不算在探索进度分母里，因为它是BOSS战触发点，但可以作为进度锁
-};
+// ========================================== 
+// 2. 探索进度计算
+// ========================================== 
 
 // 计算当前探索率 (0-100)
 export const calculateExploration = (state: PrologueState): number => {
-  // 目前只计算 CORRIDOR 阶段的探索率
   if (state.location !== 'CORRIDOR') return 0;
-
-  let currentScore = 0;
-  let maxScore = 0;
-
-  for (const [key, config] of Object.entries(EXPLORATION_NODES)) {
-    const currentLevel = state.nodeProgress[key] || 0;
-    currentScore += Math.min(currentLevel, config.maxLevel) * config.weight;
-    maxScore += config.maxLevel * config.weight;
-  }
-
-  if (maxScore === 0) return 0;
-  return Math.floor((currentScore / maxScore) * 100);
+  
+  // 总共 16 个房间
+  const totalRooms = 16;
+  const currentExplored = state.exploredRooms ? state.exploredRooms.length : 0;
+  
+  return Math.floor((currentExplored / totalRooms) * 100);
 };
 
-// ==========================================
+// ========================================== 
 // 3. 动作配置 (Action Logic)
-// ==========================================
+// ========================================== 
 
 export interface PrologueActionConfig {
   id: string;
@@ -79,18 +67,59 @@ export interface PrologueActionConfig {
   // 是否显示该动作
   condition?: (state: GameState) => boolean;
   
-  // 执行逻辑：返回更新的状态片段 + 日志文本
-  // 特殊返回值：'TRIGGER_COMBAT_PROLOGUE' | 'TRIGGER_COMBAT_BOSS' | 'TRIGGER_EQUIP_ALERT'
+  // 执行逻辑
   effect: (state: GameState) => { 
-    updates?: Partial<GameState> | Partial<PrologueState>; // 支持深层更新比较麻烦，这里简化为由 App 处理混合
+    updates?: Partial<GameState> | Partial<PrologueState>; 
     log: string;
-    specialEvent?: 'TRIGGER_COMBAT_PROLOGUE' | 'TRIGGER_COMBAT_BOSS' | 'TRIGGER_EQUIP_ALERT'; 
+    specialEvent?: 'TRIGGER_COMBAT_PROLOGUE' | 'TRIGGER_COMBAT_BOSS' | 'TRIGGER_EQUIP_ALERT' | 'TRIGGER_PROLOGUE_EVENT'; 
   };
 }
 
+// ==========================================
+// 4. 序章事件配置 (Prologue Specific Events)
+// ==========================================
+
+export const getRoomExplorationEvent = (floor: number, roomNum: number): GameEvent => {
+    const roomId = `${floor}-${roomNum}`;
+    return {
+        id: `ROOM_EXPLORE_${roomId}`,
+        title: `${floor}0${roomNum} 室：探索`,
+        description: `你推开了 ${floor}0${roomNum} 室的大门，里面一片狼藉，是灾难发生后的正常景象。你决定如何搜刮这个房间？`,
+        choices: [
+            {
+                text: '仔细翻找 (耗时更久，收益可能更高)',
+                effect: (state) => {
+                    const newExplored = [...state.prologue.exploredRooms, roomId];
+                    return {
+                        prologue: { ...state.prologue, exploredRooms: newExplored, activeEventId: undefined },
+                        resources: { ...state.resources, food: state.resources.food + 2, materials: state.resources.materials + 1 },
+                        logs: [...state.logs, `你仔细搜刮了 ${floor}0${roomNum} 室，耗费了一些时间。你找到了一些食物和材料。日志暗示你在里面拖了一会儿。`]
+                    };
+                }
+            },
+            {
+                text: '抓紧时间 (快速搜刮，迅速离开)',
+                effect: (state) => {
+                    const newExplored = [...state.prologue.exploredRooms, roomId];
+                    return {
+                        prologue: { ...state.prologue, exploredRooms: newExplored, activeEventId: undefined },
+                        resources: { ...state.resources, food: state.resources.food + 1 },
+                        logs: [...state.logs, `你快速搜刮了 ${floor}0${roomNum} 室，你刻意压抑住翻看旧照片的冲动，迅速离开。你找到了一些食物。`]
+                    };
+                }
+            }
+        ]
+    };
+};
+
+export const PROLOGUE_STATIC_EVENTS: Record<string, GameEvent> = {
+    // 可以在这里添加其他静态的序章事件，例如第一次去某个地方的事件等
+};
+
+
 export const PROLOGUE_ACTIONS: PrologueActionConfig[] = [
   // -----------------------------------------------------------
-  // 阶段一：家里 (HOME)
+  // 阶段一：家里 (HOME) - 保持不变
   // -----------------------------------------------------------
   {
     id: 'HOME_LISTEN',
@@ -159,7 +188,6 @@ export const PROLOGUE_ACTIONS: PrologueActionConfig[] = [
       };
     }
   },
-  // 战斗与成长解锁：需要看过猫眼，且拿到撬棍
   {
     id: 'HOME_FIGHT',
     label: '开门战斗',
@@ -169,133 +197,191 @@ export const PROLOGUE_ACTIONS: PrologueActionConfig[] = [
       log: '你深吸一口气，握紧了撬棍，猛地拉开了防盗门！',
       specialEvent: 'TRIGGER_COMBAT_PROLOGUE'
     })
-  },
-  {
-    id: 'HOME_SLEEP',
-    label: '睡觉',
-    desc: '逃避现实 (精神-10)',
-    condition: (s) => s.prologue.location === 'HOME' && s.prologue.flags['has_peeped'],
-    effect: (s) => ({
-      updates: { morale: Math.max(0, s.morale - 10) },
-      log: '你蒙头大睡，试图告诉自己这一切都是梦。但门口那永不停歇的撞击声让你噩梦连连。醒来时，你感到更加疲惫了。'
-    })
-  },
-  {
-    id: 'HOME_TRAIN',
-    label: '锻炼一下',
-    desc: '临阵磨枪 (STR成长+0.02)',
-    condition: (s) => s.prologue.location === 'HOME' && s.prologue.flags['has_peeped'] && !s.prologue.flags['trained_today'],
-    effect: (s) => {
-        // 深层更新 Character 需要 App 处理，这里通过 updates 传递标识或在 App 里做
-        // 简单起见，这里只更新 flag，实际属性加成在 App 里的 executeAction 补丁处理，或者这里不做深层更新
-        return {
+      },
+    
+      // --- 家里新增互动 (Life Residue) ---
+      {
+        id: 'HOME_TV_CABINET',
+        label: '检查电视柜',
+        desc: '寻找遥控器，看看电视是否还能打开',
+        condition: (s) => s.prologue.location === 'HOME' && !s.prologue.flags['checked_tv_cabinet'],
+        effect: (s) => ({
+          updates: { prologue: { ...s.prologue, flags: { ...s.prologue.flags, 'checked_tv_cabinet': true } } },
+          log: '你打开电视柜，里面躺着一个沾满灰尘的遥控器。屏幕上卡在灾前某档综艺节目的画面，一群人在舞台上载歌载舞，与窗外的末日景象格格不入。你默默地关上了它。'
+        })
+      },
+      {
+        id: 'HOME_SLEEP',
+        label: '睡觉',
+        desc: '逃避现实 (精神-10)',
+        condition: (s) => s.prologue.location === 'HOME' && s.prologue.flags['has_peeped'],
+        effect: (s) => {
+            const isFirstSleep = !s.prologue.flags['slept_once'];
+            let log = '';
+            let updates: Partial<PrologueState> = { ...s.prologue, flags: { ...s.prologue.flags, slept_once: true } };
+            let moraleChange = -10;
+    
+            if (isFirstSleep) {
+                log = '你蒙头大睡，试图告诉自己这一切都是梦。但门口那永不停歇的撞击声让你噩梦连连。醒来时，你感到更加疲惫了。';
+            } else {
+                log = '你再次选择逃避，沉入了昏沉的梦境。门外的撞击声不知道什么时候停了，你不知道那东西是走了，还是只是换了个地方等你。当你再次醒来，透过猫眼，你发现走廊的地板上似乎多了一滩暗红色的污迹...';
+                moraleChange -= 5;
+            }
+    
+            return {
+                updates: { 
+                    morale: Math.max(0, s.morale + moraleChange),
+                    prologue: updates 
+                },
+                log
+            };
+        }
+      },
+      {
+        id: 'HOME_TRAIN',
+        label: '锻炼一下',
+        desc: '临阵磨枪 (STR成长+0.02)',
+        condition: (s) => s.prologue.location === 'HOME' && s.prologue.flags['has_peeped'] && !s.prologue.flags['trained_today'],
+        effect: (s) => ({
             updates: { prologue: { ...s.prologue, flags: { ...s.prologue.flags, 'trained_today': true } } },
             log: '你在狭窄的客厅做了几组俯卧撑，感觉肌肉稍微充实了一点点。虽然不多，但这让你找回了一点对自己身体的掌控感。'
-        };
+        })
+      },
+      
+      // -----------------------------------------------------------
+      // 阶段二：整栋楼探索 (CORRIDOR)
+      // -----------------------------------------------------------    
+    // --- 楼层移动 ---
+    {
+      id: 'COR_UP',
+      label: '上楼',
+      desc: '前往上一层',
+      condition: (s) => s.prologue.location === 'CORRIDOR' && s.prologue.currentFloor < 8,
+      effect: (s) => ({
+          updates: { prologue: { ...s.prologue, currentFloor: s.prologue.currentFloor + 1 } },
+          log: `你沿着楼梯小心翼翼地走上了 ${s.prologue.currentFloor + 1} 楼。`
+      })
+    },
+    {
+      id: 'COR_DOWN',
+      label: '下楼',
+      desc: '前往下一层',
+      condition: (s) => s.prologue.location === 'CORRIDOR' && s.prologue.currentFloor > 1,
+      effect: (s) => ({
+          updates: { prologue: { ...s.prologue, currentFloor: s.prologue.currentFloor - 1 } },
+          log: `你顺着楼梯下到了 ${s.prologue.currentFloor - 1} 楼。`
+      })
+    },
+  
+    // --- 房间探索 (Generic) ---
+    // 左边房间 (01)
+    {
+      id: 'COR_EXPLORE_ROOM_1',
+      label: '探索 01 室',
+      desc: '查看左边的住户',
+      condition: (s) => {
+          if (s.prologue.location !== 'CORRIDOR') return false;
+          const roomId = `${s.prologue.currentFloor}-1`;
+          return !s.prologue.exploredRooms.includes(roomId); // 只有未探索的房间才能探索
+      },
+      effect: (s) => {
+          const floor = s.prologue.currentFloor;
+          const roomNum = 1;
+          const roomId = `${floor}-${roomNum}`;
+          
+          return {
+              updates: { prologue: { ...s.prologue, activeEventId: `ROOM_EXPLORE_${roomId}` } },
+              log: `你来到了 ${floor}0${roomNum} 室门前。`,
+              specialEvent: 'TRIGGER_PROLOGUE_EVENT'
+          };
+      }
+    },
+    // 右边房间 (02)
+    {
+      id: 'COR_EXPLORE_ROOM_2',
+      label: '探索 02 室',
+      desc: '查看右边的住户',
+      condition: (s) => {
+          if (s.prologue.location !== 'CORRIDOR') return false;
+          const roomId = `${s.prologue.currentFloor}-2`;
+          return !s.prologue.exploredRooms.includes(roomId); // 只有未探索的房间才能探索
+      },
+      effect: (s) => {
+          const floor = s.prologue.currentFloor;
+          const roomNum = 2;
+          const roomId = `${floor}-${roomNum}`;
+  
+          return {
+              updates: { prologue: { ...s.prologue, activeEventId: `ROOM_EXPLORE_${roomId}` } },
+              log: `你来到了 ${floor}0${roomNum} 室门前。`,
+              specialEvent: 'TRIGGER_PROLOGUE_EVENT'
+          };
+      }
+    },
+  
+    // --- 楼道新增互动 (Life Residue) ---
+    {
+      id: 'COR_CHECK_MAILBOX',
+      label: '翻看信箱',
+      desc: '看看有没有什么遗漏的信息',
+      condition: (s) => s.prologue.location === 'CORRIDOR' && !s.prologue.flags[`checked_mailbox_${s.prologue.currentFloor}`],
+      effect: (s) => ({
+        updates: { prologue: { ...s.prologue, flags: { ...s.prologue.flags, [`checked_mailbox_${s.prologue.currentFloor}`]: true } } },
+        log: `你检查了 ${s.prologue.currentFloor} 楼的信箱，里面塞满了逾期未取的快递单、催款单，还有一些已经泛黄的商业传单。这里曾是普通人生活的缩影。`
+      })
+    },
+    {
+      id: 'COR_CHECK_GARBAGE',
+      label: '查看废弃物',
+      desc: '搜寻生活残骸',
+      condition: (s) => s.prologue.location === 'CORRIDOR' && !s.prologue.flags[`checked_garbage_${s.prologue.currentFloor}`],
+      effect: (s) => ({
+        updates: { prologue: { ...s.prologue, flags: { ...s.prologue.flags, [`checked_garbage_${s.prologue.currentFloor}`]: true } } },
+        log: `你踢开了几个散落在地的外卖袋和快递箱。食物残渣已经腐烂，但从中你瞥见了一张电影票根，日期就在灾变发生前夕。末日前，这里的人们还在享受着平静的日常。`
+      })
+    },
+  
+    // --- 一楼大门 (Exit) ---
+    {
+      id: 'COR_CHECK_EXIT',
+      label: '检查大门',
+      desc: '查看一楼出口封锁情况',
+      condition: (s) => s.prologue.location === 'CORRIDOR' && s.prologue.currentFloor === 1,
+      effect: (s) => {
+          const exploration = calculateExploration(s.prologue);
+          if (exploration < 100) {
+               return {
+                   log: `大门被某种高压电线死死缠绕。门上的电子锁似乎连接着某种生物感应装置。系统提示：警告，楼内仍有高威胁生物反应，安全锁已启动。当前清理进度：${exploration}%。你需要清理每一层的每一个住户。`
+               };
+          } else {
+               return {
+                   log: '所有住户的威胁反应已消失。安全锁的红灯转为了绿灯。随着一声气压释放的巨响，缠绕的电线自动脱落，大门缓缓打开... 门外，是真正的地狱。',
+                   specialEvent: 'TRIGGER_COMBAT_BOSS' // 这里可以触发最终 Boss 战，或者直接通关
+               };
+          }
+      }
+    },
+  
+    // --- 返回 ---
+    {
+      id: 'COR_RETURN',
+      label: '返回自己的房间',
+      desc: '暂时撤退 (回5楼)',
+      condition: (s) => s.prologue.location === 'CORRIDOR' && s.prologue.currentFloor === 5,
+      effect: (s) => ({
+          updates: { prologue: { ...s.prologue, location: 'HOME' } },
+          log: '你退回了502室，锁好门。外面的恐怖暂时被隔绝了。'
+      })
+    },
+    // 从房间再次出门到楼道
+    {
+      id: 'HOME_GO_OUT',
+      label: '前往楼道',
+      desc: '继续探索外部',
+      condition: (s) => s.prologue.location === 'HOME' && s.prologue.nodeProgress['home_search'] >= 2 && s.prologue.flags['has_peeped'], 
+      effect: (s) => ({
+          updates: { prologue: { ...s.prologue, location: 'CORRIDOR' } }, // 默认回到 5 楼，因为 currentFloor 存在 state 里
+          log: '你握紧武器，再次推开门走进楼道。'
+      })
     }
-  },
-
-  // -----------------------------------------------------------
-  // 阶段二：楼道 (CORRIDOR)
-  // -----------------------------------------------------------
-  {
-    id: 'COR_LOOK',
-    label: '查看环境',
-    desc: '仔细观察走廊的痕迹',
-    condition: (s) => s.prologue.location === 'CORRIDOR',
-    effect: (s) => ({
-        log: '走廊的墙壁上满是黑色的手印。地上的血迹有些已经干涸，有些还很新鲜。空气中弥漫着一股说不出的腥甜味。你注意到楼道灯的感应器似乎坏了，必须跺脚才会亮。'
-    })
-  },
-  {
-    id: 'COR_NEIGHBOR',
-    label: '对门住户',
-    desc: '探索邻居家',
-    condition: (s) => s.prologue.location === 'CORRIDOR' && (s.prologue.nodeProgress['COR_NEIGHBOR'] || 0) < 2,
-    effect: (s) => {
-        const lv = s.prologue.nodeProgress['COR_NEIGHBOR'] || 0;
-        let log = '';
-        let resourceUpdate = {};
-
-        if (lv === 0) {
-            log = '你试着推了推对门的门，没锁。这是王老太的家，独居。进门处散落着拐杖和打翻的鞋柜。客厅里虽然乱，但似乎没有血迹。';
-        } else {
-            log = '你深入到卧室和厨房。在冰箱里你找到了两罐还没有过期的肉罐头，在床头柜里发现了一些止痛药。';
-            resourceUpdate = { food: s.resources.food + 2, meds: s.resources.meds + 1 };
-        }
-
-        return {
-            updates: { 
-                prologue: { ...s.prologue, nodeProgress: { ...s.prologue.nodeProgress, 'COR_NEIGHBOR': lv + 1 } },
-                resources: { ...s.resources, ...resourceUpdate }
-            },
-            log
-        };
-    }
-  },
-  {
-    id: 'COR_END',
-    label: '走廊尽头',
-    desc: '检查倒地的黑影',
-    condition: (s) => s.prologue.location === 'CORRIDOR' && (s.prologue.nodeProgress['COR_END'] || 0) < 1,
-    effect: (s) => ({
-        updates: { 
-            prologue: { ...s.prologue, nodeProgress: { ...s.prologue.nodeProgress, 'COR_END': 1 } },
-            resources: { ...s.resources, materials: s.resources.materials + 3 }
-        },
-        log: '你小心翼翼地走过去。那是一具尸体，穿着快递员的制服。他的手里还紧紧攥着一把美工刀。你忍着恶心搜身，找到了一些可用的零件材料。'
-    })
-  },
-  {
-    id: 'COR_STAIRS',
-    label: '楼梯间',
-    desc: '查看上下楼路况',
-    condition: (s) => s.prologue.location === 'CORRIDOR' && (s.prologue.nodeProgress['COR_STAIRS'] || 0) < 1,
-    effect: (s) => ({
-        updates: { 
-            prologue: { ...s.prologue, nodeProgress: { ...s.prologue.nodeProgress, 'COR_STAIRS': 1 } }
-        },
-        log: '安全门依然沉重。你推开一条缝，楼道里漆黑一片。下方传来密集的脚步声和嘶吼声，上方则死一般的寂静。理智告诉你，现在不是离开这一层的时候。'
-    })
-  },
-  {
-    id: 'COR_ELEVATOR',
-    label: '电梯前',
-    desc: '调查电梯异响 (需探索度100%)',
-    condition: (s) => s.prologue.location === 'CORRIDOR',
-    effect: (s) => {
-        const exploration = calculateExploration(s.prologue);
-        if (exploration < 100) {
-            return {
-                log: `电梯门紧闭着，门缝里渗出黑色的粘液。里面有什么东西正在撞击轿厢。你需要先把周围环境确认安全(当前探索度${exploration}%)，才能专心处理这个大家伙。`
-            };
-        } else {
-            return {
-                log: '你用力把撬棍插进电梯门缝，随着金属扭曲的尖啸声，门被撬开了... 里面那个与缆绳融合的怪物转过头来看着你！',
-                specialEvent: 'TRIGGER_COMBAT_BOSS'
-            };
-        }
-    }
-  },
-  {
-    id: 'COR_RETURN',
-    label: '返回房间',
-    desc: '暂时撤退回安全区',
-    condition: (s) => s.prologue.location === 'CORRIDOR',
-    effect: (s) => ({
-        updates: { prologue: { ...s.prologue, location: 'HOME' } },
-        log: '你退回了自己的房间，锁好门。外面的恐怖暂时被隔绝了。'
-    })
-  },
-  // 从房间再次出门到楼道
-  {
-    id: 'HOME_GO_OUT',
-    label: '前往楼道',
-    desc: '继续探索外部',
-    condition: (s) => s.prologue.location === 'HOME' && s.prologue.nodeProgress['home_search'] >= 2 && s.prologue.flags['has_peeped'], // 只要拿到撬棍且知道外面情况就可以出去
-    effect: (s) => ({
-        updates: { prologue: { ...s.prologue, location: 'CORRIDOR' } },
-        log: '你握紧武器，再次推开门走进楼道。'
-    })
-  }
-];
+  ];

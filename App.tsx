@@ -39,6 +39,26 @@ const App = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // --- 获取当前目标 ---
+  const getCurrentObjective = (): string => {
+    if (!gameState.prologue.isActive) return '在小区中生存下去，寻找幸存者。';
+
+    if (gameState.prologue.location === 'HOME') {
+      if (!gameState.prologue.flags['has_peeped']) return '查看门外情况，确认危险等级。';
+      if ((gameState.prologue.nodeProgress['home_search'] || 0) < 2) return '搜刮家里，寻找武器。';
+      return '拿起武器，冲出房间，进入楼道！';
+    }
+
+    if (gameState.prologue.location === 'CORRIDOR') {
+      const exploredCount = gameState.prologue.exploredRooms.length;
+      const totalRooms = 16;
+      if (exploredCount < totalRooms) return `探索整栋楼的所有住户 (${exploredCount}/${totalRooms} 已探索)。`;
+      if (gameState.prologue.currentFloor !== 1) return '回到一楼，检查大门。';
+      return '检查大门，尝试逃离小区！';
+    }
+    return ''; // Fallback
+  };
+
   // --- 核心循环逻辑 ---
 
   // 1. 执行行动
@@ -196,6 +216,18 @@ const App = () => {
         } else if (result.specialEvent === 'TRIGGER_COMBAT_BOSS') {
             setCombatType('BOSS');
             setTimeout(() => setShowCombat(true), 500);
+        } else if (result.specialEvent === 'TRIGGER_PROLOGUE_EVENT') {
+            // 处理序章事件，例如房间探索事件
+            if (newState.prologue.activeEventId) { // Use newState here
+                const eventId = newState.prologue.activeEventId;
+                const match = eventId.match(/ROOM_EXPLORE_(\d+)-(\d+)/);
+                if (match) {
+                    const floor = parseInt(match[1]);
+                    const roomNum = parseInt(match[2]);
+                    const roomEvent = getRoomExplorationEvent(floor, roomNum);
+                    setTimeout(() => setShowEvent(roomEvent), 100);
+                }
+            }
         }
     }
   };
@@ -205,8 +237,33 @@ const App = () => {
   const handleEventChoice = (choiceIdx: number) => {
     if (!showEvent) return;
     const choice = showEvent.choices[choiceIdx];
-    const updates = choice.effect(gameState);
-    setGameState(prev => ({ ...prev, ...updates }));
+    
+    // 对 EventModal 返回的 updates 进行特殊处理，因为 prologueEvent 的 updates 是 GameState partial
+    const updateResult = choice.effect(gameState) as Partial<GameState>;
+    
+    setGameState(prev => {
+        let newState = { ...prev };
+        if (updateResult.prologue) {
+            newState.prologue = { ...newState.prologue, ...updateResult.prologue };
+        }
+        if (updateResult.resources) {
+            newState.resources = { ...newState.resources, ...updateResult.resources };
+        }
+        // Logs from event choices are appended to existing logs
+        if (updateResult.logs) {
+            newState.logs = [...newState.logs, ...updateResult.logs];
+        }
+        if (updateResult.morale !== undefined) { // Check for undefined, not just falsy
+            newState.morale = updateResult.morale;
+        }
+
+        // Reset activeEventId if this was a prologue event
+        if (prev.prologue.activeEventId && newState.prologue) {
+            newState.prologue.activeEventId = undefined;
+        }
+
+        return newState;
+    });
     setShowEvent(null);
   };
 
@@ -386,6 +443,13 @@ const App = () => {
            {gameState.logs.slice().reverse().map((log, i) => <div key={i}>{log}</div>)}
         </div>
 
+        {/* 当前目标 */}
+        {gameState.prologue.isActive && (
+            <Card className="border-green-700 bg-gray-800/80 shadow-lg px-4 py-2">
+                <p className="text-sm font-bold text-green-300">目标: {getCurrentObjective()}</p>
+            </Card>
+        )}
+
         {/* 场景描述卡片 (新增) */}
         {prologueFlavor && (
             <Card className="border-blue-900 bg-gray-800/80 shadow-lg">
@@ -397,8 +461,10 @@ const App = () => {
                         </div>
                     )}
                 </div>
-                <div className="text-sm text-gray-300 leading-relaxed mb-2">
-                    {prologueFlavor.baseDesc}
+                <div className="text-sm text-gray-300 leading-relaxed mb-2 whitespace-pre-wrap">
+                    {typeof prologueFlavor.baseDesc === 'function' 
+                        ? prologueFlavor.baseDesc(gameState) 
+                        : prologueFlavor.baseDesc}
                 </div>
                 <div className="text-xs text-gray-500 italic border-l-2 border-gray-600 pl-2">
                     {prologueFlavor.functionDesc}
